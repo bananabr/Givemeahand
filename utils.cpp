@@ -41,7 +41,7 @@ BOOL CloneHandle(DWORD ownerPid, HANDLE handle, PHANDLE clonedHandle) {
 	HANDLE hOwner = OpenProcess(PROCESS_DUP_HANDLE, false, ownerPid);
 	if (hOwner == NULL)
 		return FALSE;
-	return DuplicateHandle(
+	bool result = DuplicateHandle(
 		hOwner,
 		handle,
 		GetCurrentProcess(),
@@ -50,20 +50,17 @@ BOOL CloneHandle(DWORD ownerPid, HANDLE handle, PHANDLE clonedHandle) {
 		false,
 		DUPLICATE_SAME_ACCESS
 	);
+	CloseHandle(hOwner);
+	return result;
 }
 
-DWORD GetTargetIntegrityLevel(DWORD pid) {
-	HANDLE hProc;
+DWORD GetTargetIntegrityLevel(HANDLE hProc) {
 	HANDLE hToken;
-	hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-	if (hProc == NULL)
-		return 0;
 	if (!OpenProcessToken(hProc, TOKEN_QUERY, &hToken))
 	{
 		CloseHandle(hProc);
 		return 0;
 	}
-
 	PTOKEN_MANDATORY_LABEL tokenInformation;
 	DWORD returnLength;
 	DWORD integrityLevel;
@@ -86,6 +83,14 @@ DWORD GetTargetIntegrityLevel(DWORD pid) {
 	CloseHandle(hToken);
 	CloseHandle(hProc);
 	return integrityLevel;
+}
+
+DWORD GetTargetIntegrityLevel(DWORD pid) {
+	HANDLE hProc;
+	hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	if (hProc == NULL)
+		return 0;
+	return GetTargetIntegrityLevel(hProc);
 }
 
 wstring GetProcName(DWORD pid)

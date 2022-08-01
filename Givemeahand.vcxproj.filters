@@ -29,5 +29,8 @@
     <ClInclude Include="support.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Givemeahand.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

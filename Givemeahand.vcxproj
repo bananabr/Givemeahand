@@ -146,6 +146,7 @@
     <ClCompile Include="utils.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Givemeahand.h" />
     <ClInclude Include="support.h" />
     <ClInclude Include="utils.h" />
   </ItemGroup>
