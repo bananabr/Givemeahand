@@ -1,5 +1,5 @@
 ## What is this?
-A PoC tool to exploit privileged dangling process handles.
+A PoC tool to exploit privileged dangling handles.
 
 ## How does it work?
 The tool look for high-privilege process handles inherited by low-privilege processes.  If candidates are found, the tool is able to spawn privileged processes by cloning the vulnerable handles.  For more details about the technique, please refer to https://aptw.tf/2022/02/10/leaked-handle-hunting.html.
@@ -14,6 +14,8 @@ The tool look for high-privilege process handles inherited by low-privilege proc
 # try to spawn privileged process
 .\Givemeahand --cmd "%windir%\system32\WindowsPowerShell\v1.0\PowerShell_ISE.exe"
 ```
+
+Here is a target project if you want to test the tool https://github.com/bananabr/VulnHandleSample
 
 ## Known issues
 * I was not able to call OpenProcess on privileged processes even when using **PROCESS_QUERY_LIMITED_INFORMATION** only. Therefore, the tool considers every process handle that we could not map to a PID to be a high-privilege process handle. Because of this approach, false positives are expected.
