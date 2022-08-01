@@ -19,6 +19,9 @@ The tool look for high-privilege process handles inherited by low-privilege proc
 * I was not able to call OpenProcess on privileged processes even when using **PROCESS_QUERY_LIMITED_INFORMATION** only. Therefore, the tool considers every process handle that we could not map to a PID to be a high-privilege process handle. Because of this approach, false positives are expected.
 * For some reason, I could only successfully launch processes with a graphical interface (e.g. PowerShell_ISE.exe, mspaint.exe, etc).  I never took the time to understand why this is the case. **PRs are welcome!**
 
+## Dependencies
+* https://github.com/microsoft/wil
+
 ## Credits
 * https://aptw.tf/2022/02/10/leaked-handle-hunting.html
 * http://dronesec.pw/blog/2019/08/22/exploiting-leaked-process-and-thread-handles/
