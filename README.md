@@ -10,9 +10,9 @@ The tool look for high-privilege process handles inherited by low-privilege proc
 
 ```
 # list only
-.\Givemeahand
+.\Givemeahand --threads (work in progress)
 # try to spawn privileged process
-.\Givemeahand --cmd "%windir%\system32\WindowsPowerShell\v1.0\PowerShell_ISE.exe"
+.\Givemeahand --procs --cmd "%windir%\system32\WindowsPowerShell\v1.0\PowerShell_ISE.exe"
 ```
 
 ## Known issues
