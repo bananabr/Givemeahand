@@ -27,7 +27,6 @@ Here is a target project if you want to test the tool https://github.com/bananab
 - [ ] exploit for PROCESS_CREATE_THREAD
 - [ ] exploit for PROCESS_DUP_HANDLE
 - [ ] exploit for PROCESS_VM_WRITE
-- [ ] exploit for PROCESS_VM_WRITE
 - [ ] exploit for THREAD_ALL_ACCESS
 - [ ] exploit for THREAD_DIRECT_IMPERSONATION
 - [ ] exploit for THREAD_SET_CONTEXT
